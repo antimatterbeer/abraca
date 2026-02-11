@@ -43,7 +43,7 @@ impl Abraca {
     pub async fn run(mut self, port: u16) -> Result<()> {
         let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
         let listener = TcpListener::bind(addr).await?;
-        log::info!("Listening on {}", addr);
+        tracing::info!("Listening on {}", addr);
         loop {
             tokio::select! {
                 Ok((stream, addr)) = listener.accept() => self.on_connection(stream, addr).await?,
@@ -53,7 +53,7 @@ impl Abraca {
     }
 
     async fn on_connection(&self, stream: TcpStream, addr: SocketAddr) -> Result<()> {
-        log::info!("New connection from {addr}");
+        tracing::info!("New connection from {addr}");
         let (mut reader, writer) = tokio::io::split(stream);
         self.clients.insert(addr, writer);
         let clients = self.clients.clone();
@@ -64,7 +64,7 @@ impl Abraca {
             loop {
                 match reader.read(&mut buf).await {
                     Ok(0) => {
-                        log::info!("Connection closed by {}", addr);
+                        tracing::info!("Connection closed by {}", addr);
                         break;
                     }
                     Ok(n) => {
@@ -93,14 +93,14 @@ impl Abraca {
                                 }
                             };
                             if let Err(e) = tx.send(req).await {
-                                log::error!("Send to mg failed: {}", e);
+                                tracing::error!("Send to mg failed: {}", e);
                             }
                         } else {
-                            log::error!("Invalid request from {}", addr);
+                            tracing::error!("Invalid request from {}", addr);
                         }
                     }
                     Err(e) => {
-                        log::error!("Error reading from {}: {}", addr, e);
+                        tracing::error!("Error reading from {}: {}", addr, e);
                         break;
                     }
                 }
@@ -115,7 +115,7 @@ impl Abraca {
         let mut failed = Vec::new();
         for mut entry in self.clients.iter_mut() {
             if let Err(e) = entry.value_mut().write_all(&data).await {
-                log::warn!("Write to client {} failed, removing: {}", entry.key(), e);
+                tracing::warn!("Write to client {} failed, removing: {}", entry.key(), e);
                 failed.push(*entry.key());
             }
         }

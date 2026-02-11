@@ -29,10 +29,10 @@ impl BinanceFutures {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        log::info!("Binance futures mg started");
+        tracing::info!("Binance futures mg started");
         let (ws_stream, _) =
             tokio_tungstenite::connect_async("wss://fstream.binance.com/stream").await?;
-        log::info!("Connected to Binance Futures");
+        tracing::info!("Connected to Binance Futures");
         let (mut writer, mut reader) = ws_stream.split();
         loop {
             tokio::select! {
@@ -45,7 +45,7 @@ impl BinanceFutures {
                                 "id": self.req_id,
                             });
                             writer.send(Message::Text(data.to_string().into())).await?;
-                            log::info!("Subscribed to topics: {:?}", topics);
+                            tracing::info!("Subscribed to topics: {:?}", topics);
                         }
                         MgReqData::Unsubscribe(topics) => {
                             let data = json!({
@@ -54,10 +54,10 @@ impl BinanceFutures {
                                 "id": self.req_id,
                             });
                             writer.send(Message::Text(data.to_string().into())).await?;
-                            log::info!("Unsubscribed from topics: {:?}", topics);
+                            tracing::info!("Unsubscribed from topics: {:?}", topics);
                         }
                     }
-                    self.id_map.insert(req.id, self.req_id);
+                    self.id_map.insert(self.req_id, req.id);
                     self.req_id += 1;
                 }
                 Some(Ok(msg)) = reader.next() => {
@@ -69,11 +69,11 @@ impl BinanceFutures {
                                         id,
                                         timestamp: chrono::Utc::now().timestamp_millis(),
                                         error: None,
-                                        result: false,
+                                        result: result.result.is_null(),
                                     });
                                     let _ = self.tx.send(rsp).await;
                                 }else{
-                                    log::error!("id not found: {}", result.id);
+                                    tracing::error!("id not found: {}", result.id);
                                 }
                             }
                             Ok(inner::Rsp::Stream(inner::Stream { stream, data })) => {
@@ -100,7 +100,7 @@ impl BinanceFutures {
                                     }
                                 }
                             }
-                            _ => log::error!("Invalid message: {text}"),
+                            _ => tracing::error!("Invalid message: {text}"),
                         }
                     }
                 }

@@ -20,7 +20,7 @@ pub async fn start_mg(exchange: Exchange, rsp_tx: RspSender) -> Result<ReqSender
             tokio::spawn(async move {
                 let mg = binance_futures::BinanceFutures::new(req_rx, rsp_tx);
                 if let Err(e) = mg.run().await {
-                    log::error!("Error running binance futures: {}", e);
+                    tracing::error!("Error running binance futures: {}", e);
                 }
             });
             Ok(req_tx)
