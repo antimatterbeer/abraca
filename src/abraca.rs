@@ -1,8 +1,4 @@
-use crate::{
-    common::{Exchange, MgReq, MgResult, MgRsp, ReqSender, RspReceiver, RspSender},
-    error::Result,
-    mg::start_mg,
-};
+use crate::{market, prelude::*};
 use dashmap::DashMap;
 use std::collections::HashMap;
 use std::{
@@ -16,11 +12,10 @@ use tokio::{
 };
 
 pub struct Abraca {
-    clients: Arc<DashMap<SocketAddr, WriteHalf<TcpStream>>>,
-    /// 每个 exchange 只起一个 mg，写锁保证只初始化一次
-    req_txs: Arc<RwLock<HashMap<Exchange, ReqSender>>>,
-    rsp_tx: RspSender,
-    rsp_rx: RspReceiver,
+    clients: Arc<DashMap<SocketAddr, WriteHalf<TcpStream>>>, // 客户端连接
+    req_txs: Arc<RwLock<HashMap<Exchange, ReqSender>>>,      // 到各个交易所的请求通道
+    rsp_tx: RspSender,                                       // 到客户端的响应通道
+    rsp_rx: RspReceiver,                                     // 从客户端的响应通道
 }
 
 impl Default for Abraca {
@@ -68,24 +63,27 @@ impl Abraca {
                         break;
                     }
                     Ok(n) => {
-                        if let Ok(req) = serde_json::from_slice::<MgReq>(&buf[..n]) {
+                        if let Ok(req) = serde_json::from_slice::<MarketReq>(&buf[..n]) {
                             let tx = {
                                 let mut g = req_txs.write().await;
                                 if let Some(t) = g.get(&req.exchange) {
                                     t.clone()
                                 } else {
-                                    match start_mg(req.exchange, rsp_tx.clone()).await {
+                                    match market::start_mg(req.exchange, rsp_tx.clone()).await {
                                         Ok(t) => {
                                             g.insert(req.exchange, t.clone());
                                             t
                                         }
                                         Err(e) => {
-                                            let rsp = MgRsp::Result(MgResult {
-                                                id: req.id,
+                                            let rsp = MarketRsp {
+                                                exchange: req.exchange,
                                                 timestamp: chrono::Utc::now().timestamp_millis(),
-                                                error: Some(e.to_string()),
-                                                result: false,
-                                            });
+                                                data: MarketRspData::Response(Response {
+                                                    id: req.id,
+                                                    error: Some(e.to_string()),
+                                                    result: false,
+                                                }),
+                                            };
                                             let _ = rsp_tx.send(rsp).await;
                                             continue;
                                         }
@@ -110,7 +108,7 @@ impl Abraca {
         Ok(())
     }
 
-    async fn on_rsp(&self, rsp: MgRsp) -> Result<()> {
+    async fn on_rsp(&self, rsp: MarketRsp) -> Result<()> {
         let data = serde_json::to_vec(&rsp)?;
         let mut failed = Vec::new();
         for mut entry in self.clients.iter_mut() {

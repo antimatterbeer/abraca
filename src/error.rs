@@ -8,8 +8,8 @@ pub enum Error {
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("Reqwest error: {0}")]
     Reqwest(#[from] reqwest::Error),
-    #[error("Mg error: {0}")]
-    Mg(String),
+    #[error("Market error: {0}")]
+    Market(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
