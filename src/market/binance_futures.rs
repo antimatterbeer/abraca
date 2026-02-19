@@ -49,7 +49,7 @@ impl BinanceFutures {
         }
     }
 
-    /// 处理客户端请求：订阅 / 退订 / 获取交易对信息
+    /// 处理客户端请求
     async fn handle_req<W>(&mut self, writer: &mut W, req: MarketReq) -> Result<()>
     where
         W: SinkExt<Message> + Unpin,
@@ -57,9 +57,14 @@ impl BinanceFutures {
     {
         match req.data {
             MarketReqData::Subscribe(topics) => {
+                let params = topics
+                    .iter()
+                    .map(|topic| inner::topic_to_stream_name(topic))
+                    .filter_map(Result::ok)
+                    .collect::<Vec<String>>();
                 let data = json!({
                     "method": "SUBSCRIBE",
-                    "params": topics,
+                    "params": params,
                     "id": self.req_id,
                 });
                 writer
@@ -71,9 +76,14 @@ impl BinanceFutures {
                 self.req_id += 1;
             }
             MarketReqData::Unsubscribe(topics) => {
+                let params = topics
+                    .iter()
+                    .map(|topic| inner::topic_to_stream_name(topic))
+                    .filter_map(Result::ok)
+                    .collect::<Vec<String>>();
                 let data = json!({
                     "method": "UNSUBSCRIBE",
-                    "params": topics,
+                    "params": params,
                     "id": self.req_id,
                 });
                 writer
@@ -85,46 +95,43 @@ impl BinanceFutures {
                 self.req_id += 1;
             }
             MarketReqData::GetSymbolInfo(symbols) => {
-                for symbol in symbols {
-                    let rsp = if let Some(info) = self.symbol_infos.get(&symbol) {
-                        MarketRsp {
-                            exchange: Exchange::BinanceFutures,
-                            timestamp: chrono::Utc::now().timestamp_millis(),
-                            data: MarketRspData::SymbolInfo(info.clone()),
+                let infos = self
+                    .symbol_infos
+                    .iter()
+                    .filter_map(|(symbol, info)| {
+                        if symbols.contains(symbol) {
+                            Some(info.clone())
+                        } else {
+                            None
                         }
-                    } else {
-                        MarketRsp {
-                            exchange: Exchange::BinanceFutures,
-                            timestamp: chrono::Utc::now().timestamp_millis(),
-                            data: MarketRspData::Response(Response {
-                                id: req.id,
-                                error: Some(format!("Symbol not found: {}", symbol)),
-                                result: false,
-                            }),
-                        }
-                    };
-                    let _ = self.tx.send(rsp).await;
-                }
+                    })
+                    .collect::<Vec<SymbolInfo>>();
+                let rsp = MarketRsp {
+                    exchange: Exchange::BinanceFutures,
+                    id: Some(req.id),
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                    data: MarketRspData::SymbolInfos(infos),
+                };
+                let _ = self.tx.send(rsp).await;
             }
         }
         Ok(())
     }
 
-    /// 处理 WebSocket 下行消息：请求结果或行情推送
+    /// 处理 WebSocket 下行消息
     async fn handle_ws_msg(&mut self, text: &str) {
         match serde_json::from_str::<inner::WsRsp>(text) {
             Ok(inner::WsRsp::Result(result)) => {
                 if let Some(id) = self.id_map.remove(&result.id) {
-                    let rsp = MarketRsp {
-                        exchange: Exchange::BinanceFutures,
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                        data: MarketRspData::Response(Response {
-                            id,
-                            error: None,
-                            result: result.result.is_null(),
-                        }),
-                    };
-                    let _ = self.tx.send(rsp).await;
+                    if let Some(msg) = result.msg {
+                        let rsp = MarketRsp {
+                            exchange: Exchange::BinanceFutures,
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                            id: Some(id),
+                            data: MarketRspData::Error(msg),
+                        };
+                        let _ = self.tx.send(rsp).await;
+                    }
                 } else {
                     tracing::error!("id not found: {}", result.id);
                 }
@@ -132,18 +139,22 @@ impl BinanceFutures {
             Ok(inner::WsRsp::Stream(inner::WsStream { stream: _, data })) => {
                 if let Ok(data) = serde_json::from_value::<inner::StreamData>(data) {
                     match data {
-                        inner::StreamData::Kline(kline) => {
-                            let rsp = MarketRsp {
-                                exchange: Exchange::BinanceFutures,
-                                timestamp: chrono::Utc::now().timestamp_millis(),
-                                data: MarketRspData::Kline(kline.into()),
-                            };
-                            let _ = self.tx.send(rsp).await;
+                        inner::StreamData::Kline(ks) => {
+                            if let Some(kline) = Option::<Kline>::from(ks) {
+                                let rsp = MarketRsp {
+                                    exchange: Exchange::BinanceFutures,
+                                    timestamp: chrono::Utc::now().timestamp_millis(),
+                                    id: None,
+                                    data: MarketRspData::Kline(kline),
+                                };
+                                let _ = self.tx.send(rsp).await;
+                            }
                         }
                         inner::StreamData::Depth(depth) => {
                             let rsp = MarketRsp {
                                 exchange: Exchange::BinanceFutures,
                                 timestamp: chrono::Utc::now().timestamp_millis(),
+                                id: None,
                                 data: MarketRspData::Depth(depth.into()),
                             };
                             let _ = self.tx.send(rsp).await;
@@ -155,6 +166,7 @@ impl BinanceFutures {
         }
     }
 
+    /// 获取交易对信息
     async fn get_symbol_infos(&mut self) -> Result<()> {
         let rsp = self
             .http_client
@@ -177,6 +189,26 @@ mod inner {
     use super::*;
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
+
+    pub fn topic_to_stream_name(topic: &str) -> Result<String> {
+        let parts = topic.split('@').collect::<Vec<&str>>();
+        if parts.len() != 2 {
+            return Err(Error::Market(format!(
+                "Invalid topic: {}. expected: <symbol>@<stream>",
+                topic
+            )));
+        }
+        let (symbol, data_type) = (parts[0], parts[1]);
+        let symbol = symbol.to_lowercase();
+        match data_type {
+            "Depth" => Ok(format!("{symbol}@depth5@500ms")),
+            "Kline" => Ok(format!("{symbol}@kline_1m")),
+            _ => Err(Error::Market(format!(
+                "Invalid stream: {}. expected: Depth or Kline",
+                data_type
+            ))),
+        }
+    }
 
     #[derive(Debug, Deserialize)]
     pub struct ExchangeInfoRsp {
@@ -282,7 +314,8 @@ mod inner {
     #[derive(Debug, Serialize, Deserialize)]
     pub struct WsResult {
         pub id: u32,
-        pub result: Value,
+        pub result: Option<Value>,
+        pub msg: Option<String>,
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -332,19 +365,23 @@ mod inner {
         amount: String,
     }
 
-    impl From<KlineStream> for Kline {
+    impl From<KlineStream> for Option<Kline> {
         fn from(data: KlineStream) -> Self {
             let parse = |s: &str| s.parse().unwrap_or(0.0);
             let k = &data.k;
-            Self {
-                symbol: k.symbol.clone(),
-                open: parse(&k.open),
-                high: parse(&k.high),
-                low: parse(&k.low),
-                close: parse(&k.close),
-                volume: parse(&k.volume),
-                quote_volume: parse(&k.amount),
-                timestamp: k.timestamp,
+            if k.is_closed {
+                Some(Kline {
+                    symbol: k.symbol.clone(),
+                    open: parse(&k.open),
+                    high: parse(&k.high),
+                    low: parse(&k.low),
+                    close: parse(&k.close),
+                    volume: parse(&k.volume),
+                    quote_volume: parse(&k.amount),
+                    timestamp: k.timestamp,
+                })
+            } else {
+                None
             }
         }
     }
@@ -399,7 +436,8 @@ mod inner {
                 rsp,
                 WsRsp::Result(WsResult {
                     id: 0,
-                    result: Value::Null
+                    result: None,
+                    msg: None,
                 })
             ));
         }

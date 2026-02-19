@@ -22,6 +22,9 @@ pub struct MarketReq {
 pub struct MarketRsp {
     /// 交易所
     pub exchange: Exchange,
+    /// 请求ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<u32>,
     /// 服务器时间戳
     pub timestamp: i64,
     /// 响应数据
@@ -47,25 +50,14 @@ pub enum MarketReqData {
 #[serde(tag = "rsp", content = "data")]
 #[serde(rename_all = "snake_case")]
 pub enum MarketRspData {
+    /// 错误
+    Error(String),
     /// K线
     Kline(Kline),
     /// 深度
     Depth(Depth),
-    /// 交易对信息
-    SymbolInfo(SymbolInfo),
-    /// 请示响应
-    Response(Response),
-}
-
-/// 请求响应
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Response {
-    /// 请求ID
-    pub id: u32,
-    /// 结果
-    pub result: bool,
-    /// 错误信息
-    pub error: Option<String>,
+    /// 请示结果
+    SymbolInfos(Vec<SymbolInfo>),
 }
 
 pub type ReqSender = Sender<MarketReq>;
