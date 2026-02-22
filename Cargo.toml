@@ -7,13 +7,15 @@ edition = "2024"
 thiserror = "2.0.18"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+serde_with = "3.16.1"
 chrono = { version = "0.4.43", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["chrono", "env-filter"] }
 tracing-appender = "0.2"
 tokio = { version = "1.46.0", features = ["full"] }
-futures = "0.3.31"
+futures = "0.3.32"
 async-trait = "0.1.89"
 dashmap = "6.1.0"
 tokio-tungstenite = { version = "0.28.0", features = ["rustls", "rustls-tls-native-roots"] }
 reqwest = { version = "0.13.1", features = ["rustls", "json"] }
+clap = { version = "4.5.60", features = ["derive"] }

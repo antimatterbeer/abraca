@@ -74,7 +74,16 @@ class Client:
 async def main() -> None:
     async with Client(HOST, PORT) as client:
         await client.get_symbol_info("BinanceFutures", ["BTCUSDT", "ETHUSDT"])
-        await client.subscribe("BinanceFutures", ["BTCUSDT@Depth", "ETHUSDT@Kline"])
+        await client.subscribe(
+            "BinanceFutures",
+            [
+                "ETHUSDT@Kline",  # 1 分钟 K 线
+                "ETHUSDT@Depth",  # 10 档深度（500ms 推送）
+                "ETHUSDT@BestPrice",  # 最优挂单（bookTicker）
+                "ETHUSDT@MarkPrice",  # 标记价格（1s 推送）
+                "ETHUSDT@ForceOrder",  # 强平订单（1s 推送）
+            ],
+        )
         recv_task = asyncio.create_task(client.recv())
         await recv_task
 

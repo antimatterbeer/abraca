@@ -1,6 +1,6 @@
 use crate::{
     def::Exchange,
-    msg::{Depth, Kline, SymbolInfo},
+    msg::{BestPrice, Depth, ForceOrder, Kline, MarkPrice, SymbolInfo},
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -47,7 +47,7 @@ pub enum MarketReqData {
 
 /// 市场响应数据
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "rsp", content = "data")]
+#[serde(tag = "data_type", content = "data")]
 #[serde(rename_all = "snake_case")]
 pub enum MarketRspData {
     /// 错误
@@ -56,6 +56,12 @@ pub enum MarketRspData {
     Kline(Kline),
     /// 深度
     Depth(Depth),
+    /// 最佳价格
+    BestPrice(BestPrice),
+    /// 标记价格
+    MarkPrice(MarkPrice),
+    /// 强平订单
+    ForceOrder(ForceOrder),
     /// 请示结果
     SymbolInfos(Vec<SymbolInfo>),
 }

@@ -33,6 +33,7 @@ impl Default for Abraca {
 }
 
 impl Abraca {
+    /// 创建一个新的 Abraca 实例
     pub fn new() -> Self {
         let (rsp_tx, rsp_rx) = tokio::sync::mpsc::channel(1024);
         Self {
@@ -42,6 +43,15 @@ impl Abraca {
         }
     }
 
+    /// 运行 Abraca 实例
+    ///
+    /// # Arguments
+    ///
+    /// * `port` - 监听端口
+    ///
+    /// # Returns
+    ///
+    /// * `Result<()>` - 运行结果
     pub async fn run(mut self, port: u16) -> Result<()> {
         let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
         let listener = TcpListener::bind(addr).await?;
@@ -169,43 +179,40 @@ impl Abraca {
     }
 
     async fn on_rsp(&self, rsp: MarketRsp) -> Result<()> {
-        let data = format!("{}\n", serde_json::to_string(&rsp)?);
-        match rsp.data {
-            MarketRspData::Kline(kline) => {
-                let subscribers = self
-                    .state
-                    .subscribers
-                    .get(&(rsp.exchange, format!("{}@Kline", kline.symbol)))
-                    .unwrap();
-                for addr in subscribers.iter() {
-                    if let Some(mut writer) = self.state.clients.get_mut(addr) {
-                        let _ = writer.write_all(data.as_bytes()).await;
-                    }
-                }
-            }
-            MarketRspData::Depth(depth) => {
-                let subscribers = self
-                    .state
-                    .subscribers
-                    .get(&(rsp.exchange, format!("{}@Depth", depth.symbol)))
-                    .unwrap();
-                for addr in subscribers.iter() {
-                    if let Some(mut writer) = self.state.clients.get_mut(addr) {
-                        let _ = writer.write_all(data.as_bytes()).await;
-                    }
-                }
-            }
-            _ => {
-                let Some(id) = rsp.id else {
-                    tracing::error!("Request ID is required");
-                    return Ok(());
-                };
-                let Some((_, addr)) = self.state.requests.remove(&id) else {
-                    tracing::error!("Request ID not found");
-                    return Ok(());
-                };
+        if let Some(id) = rsp.id {
+            if let Some((_, addr)) = self.state.requests.remove(&id) {
+                let data = format!("{}\n", serde_json::to_string(&rsp).unwrap());
                 if let Some(mut writer) = self.state.clients.get_mut(&addr) {
                     let _ = writer.write_all(data.as_bytes()).await;
+                }
+            }
+        } else {
+            let topic = match &rsp.data {
+                MarketRspData::Kline(kline) => {
+                    format!("{}@Kline", kline.symbol)
+                }
+                MarketRspData::Depth(depth) => {
+                    format!("{}@Depth", depth.symbol)
+                }
+                MarketRspData::BestPrice(best_price) => {
+                    format!("{}@BestPrice", best_price.symbol)
+                }
+                MarketRspData::MarkPrice(mark_price) => {
+                    format!("{}@MarkPrice", mark_price.symbol)
+                }
+                MarketRspData::ForceOrder(force_order) => {
+                    format!("{}@ForceOrder", force_order.symbol)
+                }
+                _ => {
+                    return Ok(());
+                }
+            };
+            if let Some(subscribers) = self.state.subscribers.get(&(rsp.exchange, topic)) {
+                let data = format!("{}\n", serde_json::to_string(&rsp).unwrap());
+                for addr in subscribers.iter() {
+                    if let Some(mut writer) = self.state.clients.get_mut(addr) {
+                        let _ = writer.write_all(data.as_bytes()).await;
+                    }
                 }
             }
         }

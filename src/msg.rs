@@ -38,19 +38,41 @@ pub struct SymbolInfo {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Ticker {
+pub struct MarkPrice {
     /// 时间戳
     pub timestamp: i64,
     /// 交易对
     pub symbol: String,
-    /// 价格
-    pub price: f64,
-    /// 成交量
-    pub volume: f64,
-    /// 成交额
-    pub quote_volume: f64,
+    /// 标记价格
+    pub mark_price: f64,
+    /// 指数价格
+    pub index_price: f64,
+    /// 预估结算价格
+    pub estimated_settle_price: f64,
+    /// 资金费率
+    pub funding_rate: f64,
+    /// 下次资金费率时间
+    pub next_funding_time: i64,
 }
 
+/// 最优挂单信息
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BestPrice {
+    /// 时间戳
+    pub timestamp: i64,
+    /// 交易对
+    pub symbol: String,
+    /// 卖一价
+    pub ask_price: f64,
+    /// 卖一量
+    pub ask_volume: f64,
+    /// 买一价
+    pub bid_price: f64,
+    /// 买一量
+    pub bid_volume: f64,
+}
+
+/// 深度信息
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Depth {
     /// 时间戳
@@ -63,6 +85,7 @@ pub struct Depth {
     pub asks: Vec<(f64, f64)>,
 }
 
+/// K线信息
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Kline {
     /// 时间戳
@@ -83,6 +106,7 @@ pub struct Kline {
     pub quote_volume: f64,
 }
 
+/// 强平订单信息
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ForceOrder {
     /// 时间戳

@@ -159,6 +159,33 @@ impl BinanceFutures {
                             };
                             let _ = self.tx.send(rsp).await;
                         }
+                        inner::StreamData::BestPrice(best_price) => {
+                            let rsp = MarketRsp {
+                                exchange: Exchange::BinanceFutures,
+                                timestamp: chrono::Utc::now().timestamp_millis(),
+                                id: None,
+                                data: MarketRspData::BestPrice(best_price.into()),
+                            };
+                            let _ = self.tx.send(rsp).await;
+                        }
+                        inner::StreamData::MarkPrice(mark_price) => {
+                            let rsp = MarketRsp {
+                                exchange: Exchange::BinanceFutures,
+                                timestamp: chrono::Utc::now().timestamp_millis(),
+                                id: None,
+                                data: MarketRspData::MarkPrice(mark_price.into()),
+                            };
+                            let _ = self.tx.send(rsp).await;
+                        }
+                        inner::StreamData::ForceOrder(force_order) => {
+                            let rsp = MarketRsp {
+                                exchange: Exchange::BinanceFutures,
+                                timestamp: chrono::Utc::now().timestamp_millis(),
+                                id: None,
+                                data: MarketRspData::ForceOrder(force_order.into()),
+                            };
+                            let _ = self.tx.send(rsp).await;
+                        }
                     }
                 }
             }
@@ -184,11 +211,10 @@ impl BinanceFutures {
 }
 
 mod inner {
-    #![allow(unused)]
-
     use super::*;
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
+    use serde_with::{DisplayFromStr, serde_as};
 
     pub fn topic_to_stream_name(topic: &str) -> Result<String> {
         let parts = topic.split('@').collect::<Vec<&str>>();
@@ -201,12 +227,79 @@ mod inner {
         let (symbol, data_type) = (parts[0], parts[1]);
         let symbol = symbol.to_lowercase();
         match data_type {
-            "Depth" => Ok(format!("{symbol}@depth5@500ms")),
+            "Depth" => Ok(format!("{symbol}@depth10@500ms")),
             "Kline" => Ok(format!("{symbol}@kline_1m")),
+            "BestPrice" => Ok(format!("{symbol}@bookTicker")),
+            "MarkPrice" => Ok(format!("{symbol}@markPrice@1s")),
             _ => Err(Error::Market(format!(
-                "Invalid stream: {}. expected: Depth or Kline",
-                data_type
+                "Invalid topic: {topic}. Unsupported data type: {data_type}"
             ))),
+        }
+    }
+
+    fn str_to_order_side(s: &str) -> OrderSide {
+        match s {
+            "BUY" => OrderSide::Buy,
+            "SELL" => OrderSide::Sell,
+            _ => OrderSide::Buy,
+        }
+    }
+
+    fn str_to_order_type(s: &str) -> OrderType {
+        match s {
+            "LIMIT" => OrderType::Limit,
+            "MARKET" => OrderType::Market,
+            "STOP" => OrderType::Stop,
+            "STOP_MARKET" => OrderType::StopMarket,
+            _ => OrderType::Limit,
+        }
+    }
+
+    fn str_to_time_in_force(s: &str) -> TimeInForce {
+        match s {
+            "GTC" => TimeInForce::GTC,
+            "IOC" => TimeInForce::IOC,
+            "FOK" => TimeInForce::FOK,
+            "GTX" => TimeInForce::GTX,
+            "GTD" => TimeInForce::GTD,
+            _ => TimeInForce::GTC,
+        }
+    }
+
+    fn str_to_order_status(s: &str) -> OrderStatus {
+        match s {
+            "NEW" => OrderStatus::New,
+            "PARTIALLY_FILLED" => OrderStatus::PartiallyFilled,
+            "FILLED" => OrderStatus::Filled,
+            "CANCELED" => OrderStatus::Canceled,
+            "REJECTED" => OrderStatus::Rejected,
+            "EXPIRED" => OrderStatus::Expired,
+            _ => OrderStatus::New,
+        }
+    }
+
+    fn str_to_contract_type(s: &str) -> ContractType {
+        match s {
+            "PERPETUAL" => ContractType::Perpetual,
+            "CURRENT_MONTH" => ContractType::CurrentMonth,
+            "NEXT_MONTH" => ContractType::NextMonth,
+            "CURRENT_QUARTER" => ContractType::CurrentQuarter,
+            "NEXT_QUARTER" => ContractType::NextQuarter,
+            "PERPETUAL_DELIVERING" => ContractType::PerpetualDelivering,
+            _ => ContractType::Perpetual,
+        }
+    }
+
+    fn str_to_contract_status(s: &str) -> ContractStatus {
+        match s {
+            "TRADING" => ContractStatus::Trading,
+            "PRE_DELIVERING" => ContractStatus::PreDelivering,
+            "DELIVERING" => ContractStatus::Delivering,
+            "DELIVERED" => ContractStatus::Delivered,
+            "PRE_SETTLE" => ContractStatus::PreSettle,
+            "SETTLING" => ContractStatus::Settling,
+            "CLOSE" => ContractStatus::Close,
+            _ => ContractStatus::Trading,
         }
     }
 
@@ -237,27 +330,10 @@ mod inner {
         fn from(s: Symbol) -> Self {
             let mut info = Self {
                 symbol: s.symbol,
-                contract_type: match s.contract_type.as_str() {
-                    "PERPETUAL" => ContractType::Perpetual,
-                    "CURRENT_MONTH" => ContractType::CurrentMonth,
-                    "NEXT_MONTH" => ContractType::NextMonth,
-                    "CURRENT_QUARTER" => ContractType::CurrentQuarter,
-                    "NEXT_QUARTER" => ContractType::NextQuarter,
-                    "PERPETUAL_DELIVERING" => ContractType::PerpetualDelivering,
-                    _ => ContractType::Perpetual,
-                },
+                contract_type: str_to_contract_type(s.contract_type.as_str()),
                 delivery_date: s.delivery_date,
                 onboard_date: s.onboard_date,
-                status: match s.status.as_str() {
-                    "TRADING" => ContractStatus::Trading,
-                    "PRE_DELIVERING" => ContractStatus::PreDelivering,
-                    "DELIVERING" => ContractStatus::Delivering,
-                    "DELIVERED" => ContractStatus::Delivered,
-                    "PRE_SETTLE" => ContractStatus::PreSettle,
-                    "SETTLING" => ContractStatus::Settling,
-                    "CLOSE" => ContractStatus::Close,
-                    _ => ContractStatus::Trading,
-                },
+                status: str_to_contract_status(s.status.as_str()),
                 base_asset: s.base_asset,
                 quote_asset: s.quote_asset,
                 margin_asset: s.margin_asset,
@@ -329,6 +405,43 @@ mod inner {
     pub enum StreamData {
         Kline(KlineStream),
         Depth(DepthStream),
+        BestPrice(BookTickerStream),
+        MarkPrice(MarkPriceStream),
+        ForceOrder(ForceOrderStream),
+    }
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct BookTickerStream {
+        #[serde(rename = "s")]
+        symbol: String,
+        #[serde(rename = "T")]
+        timestamp: i64,
+        #[serde(rename = "b")]
+        #[serde_as(as = "DisplayFromStr")]
+        bid_price: f64,
+        #[serde(rename = "B")]
+        #[serde_as(as = "DisplayFromStr")]
+        bid_volume: f64,
+        #[serde(rename = "a")]
+        #[serde_as(as = "DisplayFromStr")]
+        ask_price: f64,
+        #[serde(rename = "A")]
+        #[serde_as(as = "DisplayFromStr")]
+        ask_volume: f64,
+    }
+
+    impl From<BookTickerStream> for BestPrice {
+        fn from(data: BookTickerStream) -> Self {
+            Self {
+                symbol: data.symbol,
+                timestamp: data.timestamp,
+                bid_price: data.bid_price,
+                bid_volume: data.bid_volume,
+                ask_price: data.ask_price,
+                ask_volume: data.ask_volume,
+            }
+        }
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -339,6 +452,7 @@ mod inner {
         k: KlineStreamData,
     }
 
+    #[serde_as]
     #[derive(Debug, Serialize, Deserialize)]
     pub struct KlineStreamData {
         #[serde(rename = "T")]
@@ -348,36 +462,41 @@ mod inner {
         #[serde(rename = "i")]
         interval: String,
         #[serde(rename = "o")]
-        open: String,
+        #[serde_as(as = "DisplayFromStr")]
+        open: f64,
         #[serde(rename = "c")]
-        close: String,
+        #[serde_as(as = "DisplayFromStr")]
+        close: f64,
         #[serde(rename = "h")]
-        high: String,
+        #[serde_as(as = "DisplayFromStr")]
+        high: f64,
         #[serde(rename = "l")]
-        low: String,
+        #[serde_as(as = "DisplayFromStr")]
+        low: f64,
         #[serde(rename = "v")]
-        volume: String,
+        #[serde_as(as = "DisplayFromStr")]
+        volume: f64,
         #[serde(rename = "n")]
         trades: i64,
         #[serde(rename = "x")]
         is_closed: bool,
         #[serde(rename = "q")]
-        amount: String,
+        #[serde_as(as = "DisplayFromStr")]
+        amount: f64,
     }
 
     impl From<KlineStream> for Option<Kline> {
         fn from(data: KlineStream) -> Self {
-            let parse = |s: &str| s.parse().unwrap_or(0.0);
             let k = &data.k;
             if k.is_closed {
                 Some(Kline {
                     symbol: k.symbol.clone(),
-                    open: parse(&k.open),
-                    high: parse(&k.high),
-                    low: parse(&k.low),
-                    close: parse(&k.close),
-                    volume: parse(&k.volume),
-                    quote_volume: parse(&k.amount),
+                    open: k.open,
+                    high: k.high,
+                    low: k.low,
+                    close: k.close,
+                    volume: k.volume,
+                    quote_volume: k.amount,
                     timestamp: k.timestamp,
                 })
             } else {
@@ -386,6 +505,7 @@ mod inner {
         }
     }
 
+    #[serde_as]
     #[derive(Debug, Serialize, Deserialize)]
     pub struct DepthStream {
         #[serde(rename = "s")]
@@ -393,22 +513,114 @@ mod inner {
         #[serde(rename = "T")]
         timestamp: i64,
         #[serde(rename = "a")]
-        a: Vec<Vec<String>>,
+        #[serde_as(as = "Vec<Vec<DisplayFromStr>>")]
+        a: Vec<Vec<f64>>,
         #[serde(rename = "b")]
-        b: Vec<Vec<String>>,
+        #[serde_as(as = "Vec<Vec<DisplayFromStr>>")]
+        b: Vec<Vec<f64>>,
     }
 
     impl From<DepthStream> for Depth {
         fn from(data: DepthStream) -> Self {
-            let parse_pair = |p: Vec<String>| {
-                let price: f64 = p[0].parse().unwrap_or(0.0);
-                let qty: f64 = p[1].parse().unwrap_or(0.0);
-                (price, qty)
-            };
             Self {
                 symbol: data.s,
-                asks: data.a.into_iter().map(parse_pair).collect(),
-                bids: data.b.into_iter().map(parse_pair).collect(),
+                asks: data.a.into_iter().map(|p| (p[0], p[1])).collect(),
+                bids: data.b.into_iter().map(|p| (p[0], p[1])).collect(),
+                timestamp: data.timestamp,
+            }
+        }
+    }
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct MarkPriceStream {
+        #[serde(rename = "s")]
+        symbol: String,
+        #[serde(rename = "E")]
+        timestamp: i64,
+        #[serde_as(as = "DisplayFromStr")]
+        #[serde(rename = "p")]
+        mark_price: f64,
+        #[serde(rename = "i")]
+        #[serde_as(as = "DisplayFromStr")]
+        index_price: f64,
+        #[serde(rename = "P")]
+        #[serde_as(as = "DisplayFromStr")]
+        estimated_settle_price: f64,
+        #[serde(rename = "r")]
+        #[serde_as(as = "DisplayFromStr")]
+        funding_rate: f64,
+        #[serde(rename = "T")]
+        next_funding_time: i64,
+    }
+
+    impl From<MarkPriceStream> for MarkPrice {
+        fn from(data: MarkPriceStream) -> Self {
+            Self {
+                symbol: data.symbol,
+                timestamp: data.timestamp,
+                mark_price: data.mark_price,
+                index_price: data.index_price,
+                estimated_settle_price: data.estimated_settle_price,
+                funding_rate: data.funding_rate,
+                next_funding_time: data.next_funding_time,
+            }
+        }
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct ForceOrderStream {
+        #[serde(rename = "E")]
+        timestamp: i64,
+        #[serde(rename = "o")]
+        order: ForceOrderStreamData,
+    }
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize)]
+    struct ForceOrderStreamData {
+        #[serde(rename = "s")]
+        symbol: String,
+        #[serde(rename = "S")]
+        side: String,
+        #[serde(rename = "o")]
+        order_type: String,
+        #[serde(rename = "f")]
+        time_in_force: String,
+        #[serde(rename = "q")]
+        #[serde_as(as = "DisplayFromStr")]
+        quantity: f64,
+        #[serde(rename = "p")]
+        #[serde_as(as = "DisplayFromStr")]
+        price: f64,
+        #[serde(rename = "ap")]
+        #[serde_as(as = "DisplayFromStr")]
+        average_price: f64,
+        #[serde(rename = "X")]
+        status: String,
+        #[serde(rename = "l")]
+        #[serde_as(as = "DisplayFromStr")]
+        last_filled_quantity: f64,
+        #[serde(rename = "z")]
+        #[serde_as(as = "DisplayFromStr")]
+        filled_quantity: f64,
+        #[serde(rename = "T")]
+        timestamp: i64,
+    }
+
+    impl From<ForceOrderStream> for ForceOrder {
+        fn from(data: ForceOrderStream) -> Self {
+            Self {
+                symbol: data.order.symbol,
+                side: str_to_order_side(data.order.side.as_str()),
+                order_type: str_to_order_type(data.order.order_type.as_str()),
+                time_in_force: str_to_time_in_force(data.order.time_in_force.as_str()),
+                quantity: data.order.quantity,
+                price: data.order.price,
+                average_price: data.order.average_price,
+                status: str_to_order_status(data.order.status.as_str()),
+                last_filled_quantity: data.order.last_filled_quantity,
+                filled_quantity: data.order.filled_quantity,
                 timestamp: data.timestamp,
             }
         }
@@ -417,7 +629,6 @@ mod inner {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::prelude::*;
 
         #[test]
         fn test_deserialize_exchange_info_rsp() -> Result<()> {

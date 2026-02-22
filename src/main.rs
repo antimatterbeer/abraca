@@ -1,12 +1,21 @@
+use clap::Parser;
 use tracing_subscriber::{
     EnvFilter, fmt::time::ChronoLocal, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
+#[derive(Debug, Parser)]
+struct Args {
+    /// 监听端口
+    #[clap(short, long, default_value = "8080", help = "监听端口")]
+    port: u16,
+}
+
 #[tokio::main]
 async fn main() -> abraca::error::Result<()> {
     setup_logger();
+    let args = Args::parse();
     let abraca = abraca::Abraca::new();
-    abraca.run(8080).await?;
+    abraca.run(args.port).await?;
     Ok(())
 }
 
