@@ -1,21 +1,24 @@
-[package]
-name = "abraca"
+[workspace]
+members = ["abraca-base", "abraca-mds"]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.93.1"
 
-[dependencies]
+[workspace.dependencies]
 thiserror = "2.0.18"
-serde = { version = "1.0.228", features = ["derive"] }
+serde = "1.0.228"
 serde_json = "1.0.149"
-serde_with = "3.16.1"
-chrono = { version = "0.4.43", features = ["serde"] }
+serde_with = "3.17.0"
+chrono = "0.4.44"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["chrono", "env-filter"] }
+tracing-subscriber = "0.3"
 tracing-appender = "0.2"
-tokio = { version = "1.46.0", features = ["full"] }
+tokio = "1.46.0"
 futures = "0.3.32"
-async-trait = "0.1.89"
+tokio-tungstenite = "0.28.0"
 dashmap = "6.1.0"
-tokio-tungstenite = { version = "0.28.0", features = ["rustls", "rustls-tls-native-roots"] }
-reqwest = { version = "0.13.1", features = ["rustls", "json"] }
-clap = { version = "4.5.60", features = ["derive"] }
+reqwest = "0.13.2"
+clap = "4.5.60"

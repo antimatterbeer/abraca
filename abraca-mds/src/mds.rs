@@ -1,4 +1,8 @@
-use crate::{market, prelude::*};
+use crate::{
+    channel::{ReqData, ReqSender, RspData, RspReceiver, RspSender, channel},
+    error::Result,
+};
+use abraca_base::prelude::*;
 use dashmap::DashMap;
 use std::{
     collections::{HashMap, HashSet},
@@ -12,7 +16,7 @@ use tokio::{
 };
 
 #[derive(Debug, Default, Clone)]
-pub struct SharedState {
+pub struct MdsState {
     clients: Arc<DashMap<SocketAddr, WriteHalf<TcpStream>>>,
     req_txs: Arc<RwLock<HashMap<Exchange, ReqSender>>>,
     subscribers: Arc<DashMap<(Exchange, String), HashSet<SocketAddr>>>,
@@ -20,30 +24,30 @@ pub struct SharedState {
     requests: Arc<DashMap<u32, SocketAddr>>,
 }
 
-pub struct Abraca {
-    state: SharedState,
+pub struct Mds {
+    state: MdsState,     // 共享状态
     rsp_tx: RspSender,   // 到客户端的响应通道
     rsp_rx: RspReceiver, // 从客户端的响应通道
 }
 
-impl Default for Abraca {
+impl Default for Mds {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Abraca {
-    /// 创建一个新的 Abraca 实例
+impl Mds {
+    /// 创建一个新的 Mds 实例
     pub fn new() -> Self {
-        let (rsp_tx, rsp_rx) = tokio::sync::mpsc::channel(1024);
+        let (rsp_tx, rsp_rx) = channel(1024);
         Self {
-            state: SharedState::default(),
+            state: MdsState::default(),
             rsp_tx,
             rsp_rx,
         }
     }
 
-    /// 运行 Abraca 实例
+    /// 运行 Mds 实例
     ///
     /// # Arguments
     ///
@@ -81,7 +85,7 @@ impl Abraca {
                     }
                     Ok(_) => {
                         let line = buf.strip_suffix(b"\n").unwrap_or(buf.as_slice());
-                        let Ok(req) = serde_json::from_slice::<MarketReq>(line) else {
+                        let Ok(req) = serde_json::from_slice::<Request<ReqData>>(line) else {
                             tracing::error!(
                                 "Invalid request from {}: {}",
                                 addr,
@@ -96,17 +100,17 @@ impl Abraca {
                             if let Some(t) = g.get(&req.exchange) {
                                 t.clone()
                             } else {
-                                match market::start_mg(req.exchange, rsp_tx.clone()).await {
+                                match crate::gateway::start(req.exchange, rsp_tx.clone()).await {
                                     Ok(tx) => {
                                         g.insert(req.exchange, tx.clone());
                                         tx
                                     }
                                     Err(e) => {
-                                        let rsp = MarketRsp {
+                                        let rsp = Response::<RspData> {
                                             exchange: req.exchange,
                                             timestamp: chrono::Utc::now().timestamp_millis(),
                                             id: Some(req.id),
-                                            data: MarketRspData::Error(e.to_string()),
+                                            data: RspData::Error(e.to_string()),
                                         };
                                         let _ = rsp_tx.send(rsp).await;
                                         continue;
@@ -115,7 +119,7 @@ impl Abraca {
                             }
                         };
                         match req.data {
-                            MarketReqData::Subscribe(topics) => {
+                            ReqData::Subscribe(topics) => {
                                 let mut new_topics = Vec::new();
                                 for topic in &topics {
                                     let mut addrs = state
@@ -133,14 +137,14 @@ impl Abraca {
                                         topics.iter().map(|topic| (req.exchange, topic.clone())),
                                     ),
                                 );
-                                let req = MarketReq {
+                                let req = Request::<ReqData> {
                                     exchange: req.exchange,
                                     id: req.id,
-                                    data: MarketReqData::Subscribe(new_topics),
+                                    data: ReqData::Subscribe(new_topics),
                                 };
                                 let _ = tx.send(req).await;
                             }
-                            MarketReqData::Unsubscribe(topics) => {
+                            ReqData::Unsubscribe(topics) => {
                                 let mut removed_topics = Vec::new();
                                 for topic in &topics {
                                     let mut addrs = state
@@ -153,10 +157,10 @@ impl Abraca {
                                     }
                                 }
                                 state.subscriptions.remove(&addr);
-                                let req = MarketReq {
+                                let req = Request::<ReqData> {
                                     exchange: req.exchange,
                                     id: req.id,
-                                    data: MarketReqData::Unsubscribe(removed_topics),
+                                    data: ReqData::Unsubscribe(removed_topics),
                                 };
                                 let _ = tx.send(req).await;
                             }
@@ -178,7 +182,7 @@ impl Abraca {
         Ok(())
     }
 
-    async fn on_rsp(&self, rsp: MarketRsp) -> Result<()> {
+    async fn on_rsp(&self, rsp: Response<RspData>) -> Result<()> {
         if let Some(id) = rsp.id {
             if let Some((_, addr)) = self.state.requests.remove(&id) {
                 let data = format!("{}\n", serde_json::to_string(&rsp).unwrap());
@@ -188,19 +192,19 @@ impl Abraca {
             }
         } else {
             let topic = match &rsp.data {
-                MarketRspData::Kline(kline) => {
+                RspData::Kline(kline) => {
                     format!("{}@Kline", kline.symbol)
                 }
-                MarketRspData::Depth(depth) => {
+                RspData::Depth(depth) => {
                     format!("{}@Depth", depth.symbol)
                 }
-                MarketRspData::BestPrice(best_price) => {
+                RspData::BestPrice(best_price) => {
                     format!("{}@BestPrice", best_price.symbol)
                 }
-                MarketRspData::MarkPrice(mark_price) => {
+                RspData::MarkPrice(mark_price) => {
                     format!("{}@MarkPrice", mark_price.symbol)
                 }
-                MarketRspData::ForceOrder(force_order) => {
+                RspData::ForceOrder(force_order) => {
                     format!("{}@ForceOrder", force_order.symbol)
                 }
                 _ => {

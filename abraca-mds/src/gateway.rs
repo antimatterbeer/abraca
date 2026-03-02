@@ -1,10 +1,13 @@
-use crate::prelude::*;
+use crate::{
+    channel::{ReqSender, RspSender, channel},
+    error::{Error, Result},
+};
+use abraca_base::prelude::Exchange;
 
 mod binance_futures;
 
-#[allow(unused)]
-pub async fn start_mg(exchange: Exchange, rsp_tx: RspSender) -> Result<ReqSender> {
-    let (req_tx, req_rx) = tokio::sync::mpsc::channel(1024);
+pub async fn start(exchange: Exchange, rsp_tx: RspSender) -> Result<ReqSender> {
+    let (req_tx, req_rx) = channel(1024);
     match exchange {
         Exchange::BinanceFutures => {
             tokio::spawn(async move {
@@ -15,6 +18,6 @@ pub async fn start_mg(exchange: Exchange, rsp_tx: RspSender) -> Result<ReqSender
             });
             Ok(req_tx)
         }
-        _ => Err(Error::Market(format!("Unsupported exchange: {:?}", exchange))),
+        _ => Err(Error::Mds(format!("Unsupported exchange: {:?}", exchange))),
     }
 }

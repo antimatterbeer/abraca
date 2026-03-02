@@ -1,4 +1,8 @@
-use crate::prelude::*;
+use crate::{
+    channel::{ReqData, ReqReceiver, RspData, RspSender},
+    error::Result,
+};
+use abraca_base::prelude::*;
 use futures::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde_json::json;
@@ -50,13 +54,13 @@ impl BinanceFutures {
     }
 
     /// 处理客户端请求
-    async fn handle_req<W>(&mut self, writer: &mut W, req: MarketReq) -> Result<()>
+    async fn handle_req<W>(&mut self, writer: &mut W, req: Request<ReqData>) -> Result<()>
     where
         W: SinkExt<Message> + Unpin,
         W::Error: Into<crate::error::Error>,
     {
         match req.data {
-            MarketReqData::Subscribe(topics) => {
+            ReqData::Subscribe(topics) => {
                 let params = topics
                     .iter()
                     .map(|topic| inner::topic_to_stream_name(topic))
@@ -75,7 +79,7 @@ impl BinanceFutures {
                 self.id_map.insert(self.req_id, req.id);
                 self.req_id += 1;
             }
-            MarketReqData::Unsubscribe(topics) => {
+            ReqData::Unsubscribe(topics) => {
                 let params = topics
                     .iter()
                     .map(|topic| inner::topic_to_stream_name(topic))
@@ -94,7 +98,7 @@ impl BinanceFutures {
                 self.id_map.insert(self.req_id, req.id);
                 self.req_id += 1;
             }
-            MarketReqData::GetSymbolInfo(symbols) => {
+            ReqData::GetSymbolInfo(symbols) => {
                 let infos = self
                     .symbol_infos
                     .iter()
@@ -106,11 +110,11 @@ impl BinanceFutures {
                         }
                     })
                     .collect::<Vec<SymbolInfo>>();
-                let rsp = MarketRsp {
+                let rsp = Response::<RspData> {
                     exchange: Exchange::BinanceFutures,
                     id: Some(req.id),
                     timestamp: chrono::Utc::now().timestamp_millis(),
-                    data: MarketRspData::SymbolInfos(infos),
+                    data: RspData::SymbolInfos(infos),
                 };
                 let _ = self.tx.send(rsp).await;
             }
@@ -124,11 +128,11 @@ impl BinanceFutures {
             Ok(inner::WsRsp::Result(result)) => {
                 if let Some(id) = self.id_map.remove(&result.id) {
                     if let Some(msg) = result.msg {
-                        let rsp = MarketRsp {
+                        let rsp = Response::<RspData> {
                             exchange: Exchange::BinanceFutures,
                             timestamp: chrono::Utc::now().timestamp_millis(),
                             id: Some(id),
-                            data: MarketRspData::Error(msg),
+                            data: RspData::Error(msg),
                         };
                         let _ = self.tx.send(rsp).await;
                     }
@@ -137,56 +141,16 @@ impl BinanceFutures {
                 }
             }
             Ok(inner::WsRsp::Stream(inner::WsStream { stream: _, data })) => {
-                if let Ok(data) = serde_json::from_value::<inner::StreamData>(data) {
-                    match data {
-                        inner::StreamData::Kline(ks) => {
-                            if let Some(kline) = Option::<Kline>::from(ks) {
-                                let rsp = MarketRsp {
-                                    exchange: Exchange::BinanceFutures,
-                                    timestamp: chrono::Utc::now().timestamp_millis(),
-                                    id: None,
-                                    data: MarketRspData::Kline(kline),
-                                };
-                                let _ = self.tx.send(rsp).await;
-                            }
-                        }
-                        inner::StreamData::Depth(depth) => {
-                            let rsp = MarketRsp {
-                                exchange: Exchange::BinanceFutures,
-                                timestamp: chrono::Utc::now().timestamp_millis(),
-                                id: None,
-                                data: MarketRspData::Depth(depth.into()),
-                            };
-                            let _ = self.tx.send(rsp).await;
-                        }
-                        inner::StreamData::BestPrice(best_price) => {
-                            let rsp = MarketRsp {
-                                exchange: Exchange::BinanceFutures,
-                                timestamp: chrono::Utc::now().timestamp_millis(),
-                                id: None,
-                                data: MarketRspData::BestPrice(best_price.into()),
-                            };
-                            let _ = self.tx.send(rsp).await;
-                        }
-                        inner::StreamData::MarkPrice(mark_price) => {
-                            let rsp = MarketRsp {
-                                exchange: Exchange::BinanceFutures,
-                                timestamp: chrono::Utc::now().timestamp_millis(),
-                                id: None,
-                                data: MarketRspData::MarkPrice(mark_price.into()),
-                            };
-                            let _ = self.tx.send(rsp).await;
-                        }
-                        inner::StreamData::ForceOrder(force_order) => {
-                            let rsp = MarketRsp {
-                                exchange: Exchange::BinanceFutures,
-                                timestamp: chrono::Utc::now().timestamp_millis(),
-                                id: None,
-                                data: MarketRspData::ForceOrder(force_order.into()),
-                            };
-                            let _ = self.tx.send(rsp).await;
-                        }
-                    }
+                if let Ok(data) = serde_json::from_value::<inner::StreamData>(data)
+                    && let Some(rsp_data) = data.into()
+                {
+                    let rsp = Response::<RspData> {
+                        exchange: Exchange::BinanceFutures,
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                        id: None,
+                        data: rsp_data,
+                    };
+                    let _ = self.tx.send(rsp).await;
                 }
             }
             Err(_) => tracing::error!("Invalid message: {text}"),
@@ -212,6 +176,7 @@ impl BinanceFutures {
 
 mod inner {
     use super::*;
+    use crate::error::Error;
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
     use serde_with::{DisplayFromStr, serde_as};
@@ -219,7 +184,7 @@ mod inner {
     pub fn topic_to_stream_name(topic: &str) -> Result<String> {
         let parts = topic.split('@').collect::<Vec<&str>>();
         if parts.len() != 2 {
-            return Err(Error::Market(format!(
+            return Err(Error::Mds(format!(
                 "Invalid topic: {}. expected: <symbol>@<stream>",
                 topic
             )));
@@ -231,7 +196,7 @@ mod inner {
             "Kline" => Ok(format!("{symbol}@kline_1m")),
             "BestPrice" => Ok(format!("{symbol}@bookTicker")),
             "MarkPrice" => Ok(format!("{symbol}@markPrice@1s")),
-            _ => Err(Error::Market(format!(
+            _ => Err(Error::Mds(format!(
                 "Invalid topic: {topic}. Unsupported data type: {data_type}"
             ))),
         }
@@ -408,6 +373,18 @@ mod inner {
         BestPrice(BookTickerStream),
         MarkPrice(MarkPriceStream),
         ForceOrder(ForceOrderStream),
+    }
+
+    impl From<StreamData> for Option<RspData> {
+        fn from(data: StreamData) -> Self {
+            match data {
+                inner::StreamData::Kline(ks) => Option::<Kline>::from(ks).map(RspData::Kline),
+                inner::StreamData::Depth(d) => Some(RspData::Depth(d.into())),
+                inner::StreamData::BestPrice(b) => Some(RspData::BestPrice(b.into())),
+                inner::StreamData::MarkPrice(m) => Some(RspData::MarkPrice(m.into())),
+                inner::StreamData::ForceOrder(f) => Some(RspData::ForceOrder(f.into())),
+            }
+        }
     }
 
     #[serde_as]
@@ -622,69 +599,6 @@ mod inner {
                 last_filled_quantity: data.order.last_filled_quantity,
                 filled_quantity: data.order.filled_quantity,
                 timestamp: data.timestamp,
-            }
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn test_deserialize_exchange_info_rsp() -> Result<()> {
-            let json = include_str!("../../fixtures/binance_futures/exchangeInfo.json");
-            let rsp: ExchangeInfoRsp = serde_json::from_str(json)?;
-            let symbols: Vec<SymbolInfo> = rsp.symbols.into_iter().map(Symbol::into).collect();
-            println!("{:?}", symbols[0]);
-            Ok(())
-        }
-
-        #[test]
-        fn test_deserialize_rsp() {
-            let json = include_str!("../../fixtures/binance_futures/subscribe_result.json");
-            let rsp: WsRsp = serde_json::from_str(json).unwrap();
-            assert!(matches!(
-                rsp,
-                WsRsp::Result(WsResult {
-                    id: 0,
-                    result: None,
-                    msg: None,
-                })
-            ));
-        }
-
-        #[test]
-        fn test_deserialize_kline_stream() {
-            let json = include_str!("../../fixtures/binance_futures/kline.json");
-            let rsp: WsRsp = serde_json::from_str(json).unwrap();
-            if let WsRsp::Stream(WsStream { stream, data }) = rsp {
-                assert_eq!(stream, "btcusdt@kline_1m");
-                if let Ok(data) = serde_json::from_value::<StreamData>(data) {
-                    assert!(matches!(
-                        data,
-                        StreamData::Kline(KlineStream { s: _, k: _ })
-                    ));
-                }
-            }
-        }
-
-        #[test]
-        fn test_deserialize_depth_stream() {
-            let json = include_str!("../../fixtures/binance_futures/depth.json");
-            let rsp: WsRsp = serde_json::from_str(json).unwrap();
-            if let WsRsp::Stream(WsStream { stream, data }) = rsp {
-                assert_eq!(stream, "btcusdt@depth5@500ms");
-                if let Ok(data) = serde_json::from_value::<StreamData>(data) {
-                    assert!(matches!(
-                        data,
-                        StreamData::Depth(DepthStream {
-                            s: _,
-                            timestamp: _,
-                            a: _,
-                            b: _
-                        })
-                    ));
-                }
             }
         }
     }

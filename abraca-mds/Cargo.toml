@@ -1,0 +1,23 @@
+[package]
+name = "abraca-mds"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[dependencies]
+abraca-base = { path = "../abraca-base" }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-tungstenite = { workspace = true, features = [
+    "rustls",
+    "rustls-tls-native-roots",
+] }
+reqwest = { workspace = true, features = ["rustls", "json"] }
+clap = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }

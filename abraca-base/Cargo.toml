@@ -1,0 +1,10 @@
+[package]
+name = "abraca-base"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+tracing-subscriber = { workspace = true, features = ["chrono", "env-filter"] }
+tracing-appender = { workspace = true }
