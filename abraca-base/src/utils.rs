@@ -3,8 +3,7 @@ use tracing_subscriber::{
 };
 
 pub fn setup_logger(filename: &str) {
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let log_date_format = "%Y-%m-%d %H:%M:%S";
     let timer = ChronoLocal::new(log_date_format.to_string());
     let file_layer = tracing_subscriber::fmt::layer()

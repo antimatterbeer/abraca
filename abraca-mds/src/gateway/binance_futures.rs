@@ -1,19 +1,19 @@
-use crate::{
-    channel::{ReqData, ReqReceiver, RspData, RspSender},
-    error::Result,
-};
+use super::MdsStream;
+use crate::{MdsEvent, ReqData, RspData, error::Result};
 use abraca_base::prelude::*;
 use futures::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde_json::json;
 use std::collections::HashMap;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_tungstenite::tungstenite::Message;
 
-const BASE_URL: &str = "https://fapi.binance.com";
+const HTTP_URL: &str = "https://fapi.binance.com";
+const WS_URL: &str = "wss://fstream.binance.com/stream";
 
 pub struct BinanceFutures {
-    rx: ReqReceiver,
-    tx: RspSender,
+    rx: Receiver<Request<ReqData>>,
+    tx: Sender<MdsEvent>,
     http_client: Client,
     req_id: u32,                               // 请求ID
     id_map: HashMap<u32, u32>,                 // 请求ID映射
@@ -21,7 +21,7 @@ pub struct BinanceFutures {
 }
 
 impl BinanceFutures {
-    pub fn new(rx: ReqReceiver, tx: RspSender) -> Self {
+    pub fn new(rx: Receiver<Request<ReqData>>, tx: Sender<MdsEvent>) -> Self {
         Self {
             rx,
             tx,
@@ -34,19 +34,18 @@ impl BinanceFutures {
 
     pub async fn run(mut self) -> Result<()> {
         tracing::info!("Binance futures market started");
-        self.get_symbol_infos().await?;
-        let (ws_stream, _) =
-            tokio_tungstenite::connect_async("wss://fstream.binance.com/stream").await?;
-        tracing::info!("Connected to Binance Futures");
+        let (ws_stream, _) = tokio_tungstenite::connect_async(WS_URL).await?;
         let (mut writer, mut reader) = ws_stream.split();
         loop {
             tokio::select! {
                 Some(req) = self.rx.recv() => {
-                    self.handle_req(&mut writer, req).await?;
+                    if let Err(e) = self.on_req(&mut writer, req).await {
+                        tracing::error!("Error processing request: {}", e);
+                    }
                 }
                 Some(Ok(msg)) = reader.next() => {
-                    if let Message::Text(text) = msg {
-                        self.handle_ws_msg(&text).await;
+                    if let Message::Text(text) = msg && let Err(e) = self.on_ws_msg(&text).await {
+                            tracing::error!("Error processing websocket message: {}", e);
                     }
                 }
             }
@@ -54,114 +53,117 @@ impl BinanceFutures {
     }
 
     /// 处理客户端请求
-    async fn handle_req<W>(&mut self, writer: &mut W, req: Request<ReqData>) -> Result<()>
+    async fn on_req<W>(&mut self, writer: &mut W, req: Request<ReqData>) -> Result<()>
     where
         W: SinkExt<Message> + Unpin,
         W::Error: Into<crate::error::Error>,
     {
         match req.data {
-            ReqData::Subscribe(topics) => {
-                let params = topics
+            ReqData::Subscribe(streams) => {
+                let params = streams
                     .iter()
-                    .map(|topic| inner::topic_to_stream_name(topic))
+                    .map(|s| inner::stream_to_theirs(s))
                     .filter_map(Result::ok)
-                    .collect::<Vec<String>>();
+                    .collect::<Vec<_>>();
+                if params.is_empty() {
+                    return Ok(());
+                }
                 let data = json!({
                     "method": "SUBSCRIBE",
                     "params": params,
                     "id": self.req_id,
                 });
+                let text = serde_json::to_string(&data).unwrap();
                 writer
-                    .send(Message::Text(data.to_string().into()))
+                    .send(Message::Text(text.into()))
                     .await
                     .map_err(Into::into)?;
-                tracing::info!("Subscribed to topics: {:?}", topics);
                 self.id_map.insert(self.req_id, req.id);
                 self.req_id += 1;
             }
-            ReqData::Unsubscribe(topics) => {
-                let params = topics
+            ReqData::Unsubscribe(streams) => {
+                let params = streams
                     .iter()
-                    .map(|topic| inner::topic_to_stream_name(topic))
+                    .map(|s| inner::stream_to_theirs(s))
                     .filter_map(Result::ok)
-                    .collect::<Vec<String>>();
+                    .collect::<Vec<_>>();
+                if params.is_empty() {
+                    return Ok(());
+                }
                 let data = json!({
                     "method": "UNSUBSCRIBE",
                     "params": params,
                     "id": self.req_id,
                 });
+                let text = serde_json::to_string(&data).unwrap();
                 writer
-                    .send(Message::Text(data.to_string().into()))
+                    .send(Message::Text(text.into()))
                     .await
                     .map_err(Into::into)?;
-                tracing::info!("Unsubscribed from topics: {:?}", topics);
                 self.id_map.insert(self.req_id, req.id);
                 self.req_id += 1;
             }
             ReqData::GetSymbolInfo(symbols) => {
-                let infos = self
-                    .symbol_infos
+                if self.symbol_infos.is_empty() {
+                    self.get_symbol_infos().await?;
+                }
+                let infos = symbols
                     .iter()
-                    .filter_map(|(symbol, info)| {
-                        if symbols.contains(symbol) {
-                            Some(info.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<SymbolInfo>>();
+                    .filter_map(|symbol| self.symbol_infos.get(symbol).cloned())
+                    .collect();
                 let rsp = Response::<RspData> {
-                    exchange: Exchange::BinanceFutures,
-                    id: Some(req.id),
                     timestamp: chrono::Utc::now().timestamp_millis(),
-                    data: RspData::SymbolInfos(infos),
+                    exchange: Exchange::BinanceFutures,
+                    identifier: ResponseIdentifier::Id(req.id),
+                    result: ResponseResult::Data(RspData::SymbolInfos(infos)),
                 };
-                let _ = self.tx.send(rsp).await;
+                let _ = self.tx.send(MdsEvent::Response(rsp)).await;
             }
         }
         Ok(())
     }
 
-    /// 处理 WebSocket 下行消息
-    async fn handle_ws_msg(&mut self, text: &str) {
+    async fn on_ws_msg(&mut self, text: &str) -> Result<()> {
         match serde_json::from_str::<inner::WsRsp>(text) {
             Ok(inner::WsRsp::Result(result)) => {
                 if let Some(id) = self.id_map.remove(&result.id) {
                     if let Some(msg) = result.msg {
                         let rsp = Response::<RspData> {
-                            exchange: Exchange::BinanceFutures,
                             timestamp: chrono::Utc::now().timestamp_millis(),
-                            id: Some(id),
-                            data: RspData::Error(msg),
+                            exchange: Exchange::BinanceFutures,
+                            identifier: ResponseIdentifier::Id(id),
+                            result: ResponseResult::Error(msg),
                         };
-                        let _ = self.tx.send(rsp).await;
+                        let _ = self.tx.send(MdsEvent::Response(rsp)).await;
                     }
                 } else {
                     tracing::error!("id not found: {}", result.id);
                 }
             }
-            Ok(inner::WsRsp::Stream(inner::WsStream { stream: _, data })) => {
+            Ok(inner::WsRsp::Stream(inner::WsStream { stream, data })) => {
                 if let Ok(data) = serde_json::from_value::<inner::StreamData>(data)
                     && let Some(rsp_data) = data.into()
                 {
+                    let stream = inner::stream_to_ours(&stream)?;
                     let rsp = Response::<RspData> {
                         exchange: Exchange::BinanceFutures,
                         timestamp: chrono::Utc::now().timestamp_millis(),
-                        id: None,
-                        data: rsp_data,
+                        identifier: ResponseIdentifier::Stream(stream),
+                        result: ResponseResult::Data(rsp_data),
                     };
-                    let _ = self.tx.send(rsp).await;
+                    let _ = self.tx.send(MdsEvent::Response(rsp)).await;
                 }
             }
             Err(_) => tracing::error!("Invalid message: {text}"),
         }
+        Ok(())
     }
 
     /// 获取交易对信息
     async fn get_symbol_infos(&mut self) -> Result<()> {
         let rsp = self
             .http_client
-            .get(format!("{}/fapi/v1/exchangeInfo", BASE_URL))
+            .get(format!("{}/fapi/v1/exchangeInfo", HTTP_URL))
             .send()
             .await?
             .json::<inner::ExchangeInfoRsp>()
@@ -177,29 +179,38 @@ impl BinanceFutures {
 mod inner {
     use super::*;
     use crate::error::Error;
+    use abraca_base::types::{
+        ContractStatus, ContractType, OrderSide, OrderStatus, OrderType, TimeInForce,
+    };
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
     use serde_with::{DisplayFromStr, serde_as};
+    use std::str::FromStr;
 
-    pub fn topic_to_stream_name(topic: &str) -> Result<String> {
-        let parts = topic.split('@').collect::<Vec<&str>>();
-        if parts.len() != 2 {
-            return Err(Error::Mds(format!(
-                "Invalid topic: {}. expected: <symbol>@<stream>",
-                topic
-            )));
+    pub(super) fn stream_to_theirs(stream: &str) -> Result<String> {
+        let mds_stream = MdsStream::from_str(stream)?;
+        match mds_stream {
+            MdsStream::Kline(symbol) => Ok(format!("{}@kline_1m", symbol.to_lowercase())),
+            MdsStream::Depth(symbol) => Ok(format!("{}@depth10@500ms", symbol.to_lowercase())),
+            MdsStream::BestPrice(symbol) => Ok(format!("{}@bookTicker", symbol.to_lowercase())),
+            MdsStream::MarkPrice(symbol) => Ok(format!("{}@markPrice@1s", symbol.to_lowercase())),
+            MdsStream::ForceOrder(symbol) => Ok(format!("{}@forceOrder", symbol.to_lowercase())),
         }
+    }
+
+    pub(super) fn stream_to_ours(stream: &str) -> Result<String> {
+        let parts = stream.split('@').collect::<Vec<&str>>();
         let (symbol, data_type) = (parts[0], parts[1]);
-        let symbol = symbol.to_lowercase();
-        match data_type {
-            "Depth" => Ok(format!("{symbol}@depth10@500ms")),
-            "Kline" => Ok(format!("{symbol}@kline_1m")),
-            "BestPrice" => Ok(format!("{symbol}@bookTicker")),
-            "MarkPrice" => Ok(format!("{symbol}@markPrice@1s")),
-            _ => Err(Error::Mds(format!(
-                "Invalid topic: {topic}. Unsupported data type: {data_type}"
-            ))),
-        }
+        let symbol = symbol.to_string().to_uppercase();
+        let mds_stream = match data_type {
+            "kline_1m" => MdsStream::Kline(symbol),
+            "depth10" => MdsStream::Depth(symbol),
+            "bookTicker" => MdsStream::BestPrice(symbol),
+            "markPrice" => MdsStream::MarkPrice(symbol),
+            "forceOrder" => MdsStream::ForceOrder(symbol),
+            _ => return Err(Error::Mds(format!("Invalid stream: {stream}"))),
+        };
+        Ok(mds_stream.to_string())
     }
 
     fn str_to_order_side(s: &str) -> OrderSide {
