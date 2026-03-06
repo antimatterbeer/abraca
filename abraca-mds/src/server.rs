@@ -75,7 +75,7 @@ impl Server {
                 tokio::select! {
                     res = reader.read_until(b'\n', &mut buf) => {
                         match res {
-                            Ok(0) => tracing::info!("Connection closed by {addr}"),
+                            Ok(0) => {}
                             Err(e) => tracing::error!("Error reading from {addr}: {e}"),
                             Ok(_) => {
                                 let line = buf.strip_suffix(b"\n").unwrap_or(buf.as_slice());

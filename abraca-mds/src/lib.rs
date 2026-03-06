@@ -16,6 +16,7 @@ pub use error::{Error, Result};
 pub use server::Server;
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "req", content = "data")]
 enum ReqData {
     Subscribe(Vec<String>),
     Unsubscribe(Vec<String>),
@@ -23,6 +24,7 @@ enum ReqData {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case", tag = "data_type", content = "data")]
 enum RspData {
     SymbolInfos(Vec<SymbolInfo>),
     Kline(Kline),
