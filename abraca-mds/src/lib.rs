@@ -9,8 +9,7 @@ pub mod error;
 mod gateway;
 pub mod server;
 
-#[allow(unused)]
-mod orderbook;
+pub(crate) mod orderbook;
 
 pub use error::{Error, Result};
 pub use server::Server;

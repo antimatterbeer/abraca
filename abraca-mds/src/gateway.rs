@@ -33,6 +33,11 @@ pub enum MdsStream {
     BestPrice(String),
     MarkPrice(String),
     ForceOrder(String),
+    AggDepth {
+        symbol: String,
+        decimal_places: u32,
+        depth: usize,
+    },
 }
 
 impl std::fmt::Display for MdsStream {
@@ -43,6 +48,11 @@ impl std::fmt::Display for MdsStream {
             Self::BestPrice(symbol) => write!(f, "{}@BestPrice", symbol),
             Self::MarkPrice(symbol) => write!(f, "{}@MarkPrice", symbol),
             Self::ForceOrder(symbol) => write!(f, "{}@ForceOrder", symbol),
+            Self::AggDepth {
+                symbol,
+                decimal_places,
+                depth,
+            } => write!(f, "{}@AggDepth:{}:{}", symbol, decimal_places, depth),
         }
     }
 }
@@ -51,8 +61,28 @@ impl std::str::FromStr for MdsStream {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self> {
         let parts = s.split('@').collect::<Vec<&str>>();
+        if parts.len() < 2 {
+            return Err(Error::Mds(format!("Invalid stream: {s}")));
+        }
         let (symbol, data_type) = (parts[0], parts[1]);
         let symbol = symbol.to_string();
+        if let Some(rest) = data_type.strip_prefix("AggDepth:") {
+            let sub_parts: Vec<&str> = rest.split(':').collect();
+            if sub_parts.len() != 2 {
+                return Err(Error::Mds(format!("Invalid AggDepth format: {s}")));
+            }
+            let decimal_places: u32 = sub_parts[0]
+                .parse()
+                .map_err(|_| Error::Mds(format!("Invalid AggDepth decimal_places: {s}")))?;
+            let depth: usize = sub_parts[1]
+                .parse()
+                .map_err(|_| Error::Mds(format!("Invalid AggDepth depth: {s}")))?;
+            return Ok(Self::AggDepth {
+                symbol,
+                decimal_places,
+                depth,
+            });
+        }
         match data_type {
             "Kline" => Ok(Self::Kline(symbol)),
             "Depth" => Ok(Self::Depth(symbol)),
